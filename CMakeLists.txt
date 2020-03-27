@@ -1,50 +1,66 @@
-cmake_minimum_required(VERSION 2.8.12) # version on Ubuntu Trusty
+cmake_minimum_required(VERSION 3.5.2) # version on Ubuntu Xenial
 project(behaviortree_cpp_v3)
 
-if(NOT CMAKE_VERSION VERSION_LESS 3.1)
-    set(CMAKE_CXX_STANDARD 11)
-    set(CMAKE_CXX_STANDARD_REQUIRED ON)
-else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-endif()
+#---- Add the subdirectory cmake ----
+set(CMAKE_CONFIG_PATH ${CMAKE_MODULE_PATH}  "${CMAKE_CURRENT_LIST_DIR}/cmake")
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CONFIG_PATH}")
+
+#---- Enable C++14 ----
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(MSVC)
     add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif()
 
-if( MINGW )
+#---- Include boost to add coroutines ----
+find_package(Boost COMPONENTS coroutine QUIET)
+if(Boost_FOUND)
+    include_directories(${Boost_INCLUDE_DIRS})
+    if(NOT Boost_VERSION VERSION_LESS 105900)
+        message(STATUS "Found boost::coroutine2.")
+        add_definitions(-DBT_BOOST_COROUTINE2)
+        set(BT_COROUTINES true)
+    elseif(NOT Boost_VERSION VERSION_LESS 105300)
+        message(STATUS "Found boost::coroutine.")
+        include_directories(${Boost_INCLUDE_DIRS})
+        add_definitions(-DBT_BOOST_COROUTINE)
+        set(BT_COROUTINES true)
+    endif()
+endif()
+
+if(NOT DEFINED BT_COROUTINES)
+    message(STATUS "Coroutines disabled. Install Boost to enable them (version 1.59+ recommended).")
     add_definitions(-DBT_NO_COROUTINES)
 endif()
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-set(CMAKE_CONFIG_PATH ${CMAKE_MODULE_PATH}  "${CMAKE_CURRENT_LIST_DIR}/cmake")
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CONFIG_PATH}")
-
+#---- project configuration ----
 option(BUILD_EXAMPLES   "Build tutorials and examples" ON)
 option(BUILD_UNIT_TESTS "Build the unit tests" ON)
 option(BUILD_TOOLS "Build commandline tools" ON)
+option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 
-#############################################################
-# Find packages
+#---- Find other packages ----
 find_package(Threads)
 find_package(ZMQ)
 
 list(APPEND BEHAVIOR_TREE_EXTERNAL_LIBRARIES
     ${CMAKE_THREAD_LIBS_INIT}
-    ${CMAKE_DL_LIBS} )
+    ${CMAKE_DL_LIBS}
+    ${Boost_LIBRARIES} )
 
 if( ZMQ_FOUND )
     message(STATUS "ZeroMQ found.")
     add_definitions( -DZMQ_FOUND )
     list(APPEND BT_SOURCE src/loggers/bt_zmq_publisher.cpp)
-    list(APPEND BEHAVIOR_TREE_EXTERNAL_LIBRARIES zmq)
+    list(APPEND BEHAVIOR_TREE_EXTERNAL_LIBRARIES ${ZMQ_LIBRARIES})
 else()
     message(WARNING "ZeroMQ NOT found. Skipping the build of [PublisherZMQ] and [bt_recorder].")
 endif()
 
 set(BEHAVIOR_TREE_LIBRARY ${PROJECT_NAME})
-
 
 # Update the policy setting to avoid an error when loading the ament_cmake package
 # at the current cmake version level
@@ -85,7 +101,7 @@ elseif( CATKIN_DEVEL_PREFIX OR CATKIN_BUILD_BINARY_PACKAGE)
     list(APPEND BEHAVIOR_TREE_EXTERNAL_LIBRARIES ${catkin_LIBRARIES})
     set(BUILD_TOOL_INCLUDE_DIRS ${catkin_INCLUDE_DIRS})
 
-else()
+elseif(BUILD_UNIT_TESTS)
     find_package(GTest)
 
     if(NOT GTEST_FOUND)
@@ -152,6 +168,7 @@ list(APPEND BT_SOURCE
     src/controls/reactive_fallback.cpp
     src/controls/sequence_node.cpp
     src/controls/sequence_star_node.cpp
+    src/controls/switch_node.cpp
 
     src/loggers/bt_cout_logger.cpp
     src/loggers/bt_file_logger.cpp
@@ -165,13 +182,21 @@ list(APPEND BT_SOURCE
 
 if (UNIX)
     list(APPEND BT_SOURCE src/shared_library_UNIX.cpp )
-    add_library(${BEHAVIOR_TREE_LIBRARY} SHARED ${BT_SOURCE} )
+    if (BUILD_SHARED_LIBS)
+        add_library(${BEHAVIOR_TREE_LIBRARY} SHARED ${BT_SOURCE})
+    else()
+        add_library(${BEHAVIOR_TREE_LIBRARY} STATIC ${BT_SOURCE})
+    endif()
 endif()
 
 if (WIN32)
     set(CMAKE_DEBUG_POSTFIX "d")
     list(APPEND BT_SOURCE src/shared_library_WIN.cpp )
     add_library(${BEHAVIOR_TREE_LIBRARY} STATIC ${BT_SOURCE} )
+endif()
+
+if( ZMQ_FOUND )
+    list(APPEND BUILD_TOOL_INCLUDE_DIRS ${ZMQ_INCLUDE_DIRS})
 endif()
 
 target_link_libraries(${BEHAVIOR_TREE_LIBRARY} PUBLIC
@@ -198,30 +223,33 @@ endif()
 
 ######################################################
 # Test
-add_subdirectory(tests)
+if (BUILD_UNIT_TESTS)
+    add_subdirectory(tests)
+endif()
 
 ######################################################
 # INSTALL
-set(PROJECT_NAMESPACE BehaviorTree)
-set(PROJECT_CONFIG ${PROJECT_NAMESPACE}Config)
 
 INSTALL(TARGETS ${BEHAVIOR_TREE_LIBRARY}
-    EXPORT ${PROJECT_CONFIG}
-    ARCHIVE DESTINATION ${BEHAVIOR_TREE_BIN_DESTINATION}
+    EXPORT BehaviorTreeV3Config
+    ARCHIVE DESTINATION ${BEHAVIOR_TREE_LIB_DESTINATION}
     LIBRARY DESTINATION ${BEHAVIOR_TREE_LIB_DESTINATION}
+    RUNTIME DESTINATION ${BEHAVIOR_TREE_BIN_DESTINATION}
     )
 
 INSTALL( DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
     DESTINATION ${BEHAVIOR_TREE_INC_DESTINATION}
     FILES_MATCHING PATTERN "*.h*")
 
-install(EXPORT ${PROJECT_CONFIG}
-    DESTINATION "${BEHAVIOR_TREE_LIB_DESTINATION}/${PROJECT_NAMESPACE}/cmake"
-    NAMESPACE ${PROJECT_NAMESPACE}::)
+install(EXPORT BehaviorTreeV3Config
+    DESTINATION "${BEHAVIOR_TREE_LIB_DESTINATION}/BehaviorTreeV3/cmake"
+    NAMESPACE BT::)
 
 export(TARGETS ${PROJECT_NAME}
-    NAMESPACE ${PROJECT_NAMESPACE}::
-    FILE "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_CONFIG}.cmake")
+    NAMESPACE BT::
+    FILE "${CMAKE_CURRENT_BINARY_DIR}/BehaviorTreeV3Config.cmake")
+
+export(PACKAGE ${PROJECT_NAME})
 
 ######################################################
 # EXAMPLES and TOOLS
@@ -233,5 +261,3 @@ if( BUILD_EXAMPLES )
     add_subdirectory(sample_nodes)
     add_subdirectory(examples)
 endif()
-
-

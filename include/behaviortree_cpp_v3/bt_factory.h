@@ -1,5 +1,5 @@
 /* Copyright (C) 2018 Michele Colledanchise -  All Rights Reserved
- * Copyright (C) 2018-2019 Davide Faconti, Eurecat -  All Rights Reserved
+ * Copyright (C) 2018-2020 Davide Faconti, Eurecat -  All Rights Reserved
 *
 *   Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"),
 *   to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
@@ -104,7 +104,7 @@ See examples for more information about configuring CMake correctly
 
 #else
 
-#ifdef __linux__
+#if defined(__linux__) || defined __APPLE__
 
 #define BT_REGISTER_NODES(factory)                                                                 \
     extern "C" void __attribute__((visibility("default")))                                         \
@@ -125,16 +125,17 @@ See examples for more information about configuring CMake correctly
  *
  * To tick the tree, simply call:
  *
- *    NodeStatus status = my_tree.root_node->executeTick();
+ *    NodeStatus status = my_tree.tickRoot();
  */
-struct Tree
+class Tree
 {
-    TreeNode* root_node;
+public:
+
     std::vector<TreeNode::Ptr> nodes;
     std::vector<Blackboard::Ptr> blackboard_stack;
     std::unordered_map<std::string, TreeNodeManifest> manifests;
 
-    Tree(): root_node(nullptr) {}
+    Tree(){}
 
     // non-copyable. Only movable
     Tree(const Tree& ) = delete;
@@ -147,16 +148,53 @@ struct Tree
 
     Tree& operator=(Tree&& other)
     {
-        root_node = std::move(other.root_node);
         nodes = std::move(other.nodes);
         blackboard_stack = std::move(other.blackboard_stack);
         manifests = std::move(other.manifests);
         return *this;
     }
 
+    void haltTree()
+    {
+        if(!rootNode())
+        {
+            return;
+        }
+        // the halt should propagate to all the node if the nodes
+        // have been implemented correctly
+        rootNode()->halt();
+        rootNode()->setStatus(NodeStatus::IDLE);
+
+        //but, just in case.... this should be no-op
+        auto visitor = [](BT::TreeNode * node) {
+            node->halt();
+            node->setStatus(BT::NodeStatus::IDLE);
+        };
+        BT::applyRecursiveVisitor(rootNode(), visitor);
+    }
+
+    TreeNode* rootNode() const
+    {
+      return nodes.empty() ? nullptr : nodes.front().get();
+    }
+
+    NodeStatus tickRoot()
+    {
+      if(!rootNode())
+      {
+        throw RuntimeError("Empty Tree");
+      }
+      NodeStatus ret = rootNode()->executeTick();
+      if( ret == NodeStatus::SUCCESS || ret == NodeStatus::FAILURE){
+        rootNode()->setStatus(BT::NodeStatus::IDLE);
+      }
+      return ret;
+    }
+
     ~Tree();
 
     Blackboard::Ptr rootBlackboard();
+
 };
 
 /**
@@ -224,6 +262,13 @@ public:
      * @param file_path path of the file
      */
     void registerFromPlugin(const std::string &file_path);
+
+    /**
+     * @brief registerFromROSPlugins finds all shared libraries that export ROS plugins for behaviortree_cpp, and calls registerFromPlugin for each library.
+     * @throws If not compiled with ROS support or if the library cannot load for any reason
+     *
+     */
+    void registerFromROSPlugins();
 
     /**
      * @brief instantiateTreeNode creates an instance of a previously registered TreeNode.
